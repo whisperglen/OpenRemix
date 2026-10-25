@@ -1,0 +1,129 @@
+name: Build OpenRemix
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Publish the packaged build as the continuous prerelease
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows x64
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Set up Visual Studio environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+
+      - name: Install Vulkan SDK
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          vulkan_version: 1.4.309.0
+          install_runtime: true
+          cache: true
+          stripdown: true
+
+      - name: Add Vulkan runtime to PATH
+        shell: pwsh
+        run: |
+          $runtime = Join-Path $env:VULKAN_SDK 'runtime\x64'
+          if (-not (Test-Path (Join-Path $runtime 'vulkan-1.dll'))) {
+            throw "Vulkan x64 runtime was not found at $runtime"
+          }
+          $runtime | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install build tools
+        shell: pwsh
+        run: python -m pip install --disable-pip-version-check meson ninja numpy
+
+      # Meson asks for a program named python3. Windows installations normally
+      # expose only python.exe, so provide a small PATH shim when necessary.
+      - name: Provide python3 for Meson
+        shell: pwsh
+        run: |
+          if (-not (Get-Command python3 -ErrorAction SilentlyContinue)) {
+            $shimDirectory = Join-Path $env:RUNNER_TEMP 'python3-shim'
+            New-Item -ItemType Directory -Force -Path $shimDirectory | Out-Null
+            @('@echo off', 'python %*') | Set-Content -Encoding ascii (Join-Path $shimDirectory 'python3.cmd')
+            $shimDirectory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          }
+
+      - name: Cache OpenRemix dependencies and shader tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            _work/deps/windows
+            _work/tools
+          key: openremix-windows-${{ runner.arch }}-${{ hashFiles('scripts/common/dependencies.lock.json', 'scripts/shaders/toolchain.lock.json') }}
+
+      - name: Build and test
+        shell: pwsh
+        run: ./scripts/windows/build-remix.ps1
+
+      - name: Package
+        shell: pwsh
+        run: python scripts/common/package-remix.py --build _work/build/windows --deps _work/deps/windows --output _work/packages/windows --target windows
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: openremix-windows-x64
+          path: _work/packages/windows
+          if-no-files-found: error
+
+  release:
+    name: Continuous prerelease
+    if: >-
+      ${{ 
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        (github.event_name == 'workflow_dispatch' && inputs.publish_release)
+      }}
+    needs: windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download package artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: openremix-windows-x64
+          path: package
+
+      - name: Create release archive
+        shell: bash
+        run: |
+          cd package
+          zip -r ../OpenRemix-windows-x64.zip .
+
+      - name: Create or update continuous release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! gh release view continuous --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create continuous --repo "$GITHUB_REPOSITORY" \
+              --title "OpenRemix continuous" \
+              --notes "Automated Windows x64 build from the main branch." \
+              --prerelease
+          fi
+          gh release upload continuous OpenRemix-windows-x64.zip --repo "$GITHUB_REPOSITORY" --clobber
