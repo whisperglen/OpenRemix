@@ -2,6 +2,7 @@
 import ctypes
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -60,6 +61,21 @@ if cross_windows:
     for removed in ['ngx', 'nrd', 'rtxio', 'dxvk', 'd3d', 'xess', 'slang'] + ([] if '--usd' in sys.argv else ['usd']):
         assert removed not in needed, removed
 else:
+    # Python's Windows ctypes loader does not reliably use PATH for dependent
+    # DLLs. Register the build and dependency directories explicitly while
+    # keeping the returned handles alive for the duration of this test.
+    dll_directory_handles = []
+    if sys.platform == 'win32':
+        directories = [library.parent]
+        directories += [Path(path) for path in os.environ.get('PATH', '').split(os.pathsep) if path]
+        seen = set()
+        for directory in directories:
+            directory = directory.resolve()
+            if directory in seen or not directory.is_dir():
+                continue
+            seen.add(directory)
+            dll_directory_handles.append(os.add_dll_directory(str(directory)))
+
     runtime = ctypes.CDLL(str(library), **({'winmode': 0} if sys.platform == 'win32' else {}))
     for name in required_exports:
         assert getattr(runtime, name), name

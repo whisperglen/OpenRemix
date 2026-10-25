@@ -41,8 +41,25 @@ jobs:
         with:
           vulkan_version: 1.4.309.0
           install_runtime: true
-          cache: true
+          # The previous cache was created with install_runtime=false; disable
+          # it once so the runtime DLL is installed into a fresh SDK tree.
+          cache: false
           stripdown: true
+
+      # Diagnostic-only run: stop here so the runner's Vulkan loader locations
+      # can be inspected without spending time on the full build.
+      - name: Locate Vulkan runtime
+        shell: pwsh
+        run: python scripts/windows/find-vulkan-dll.py
+
+      - name: Add Vulkan runtime to PATH
+        shell: pwsh
+        run: |
+          $runtime = Join-Path $env:VULKAN_SDK 'runtime\x64'
+          if (-not (Test-Path (Join-Path $runtime 'vulkan-1.dll'))) {
+            throw "Vulkan x64 runtime was not found at $runtime"
+          }
+          $runtime | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Install build tools
         shell: pwsh

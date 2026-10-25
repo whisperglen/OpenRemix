@@ -1,10 +1,37 @@
 #include <remix/remix_c.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
+static void add_path_dll_directories(void) {
+  DWORD size = GetEnvironmentVariableW(L"PATH", NULL, 0);
+  if (!size) return;
+  wchar_t *path = malloc((size + 1) * sizeof(*path));
+  if (!path) return;
+  DWORD length = GetEnvironmentVariableW(L"PATH", path, size + 1);
+  if (!length || length > size) {
+    free(path);
+    return;
+  }
+  wchar_t *start = path;
+  for (wchar_t *cursor = path;; ++cursor) {
+    if (*cursor != L';' && *cursor != L'\0') continue;
+    const wchar_t separator = *cursor;
+    *cursor = L'\0';
+    if (*start) AddDllDirectory(start);
+    if (!separator) break;
+    start = cursor + 1;
+  }
+  free(path);
+}
+
 int main(int argc, char **argv) {
   if (argc != 3) return 1;
-  HMODULE library = LoadLibraryA(argv[1]);
+  add_path_dll_directories();
+  HMODULE library = LoadLibraryExA(argv[1], NULL,
+                                   LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR |
+                                       LOAD_LIBRARY_SEARCH_DEFAULT_DIRS |
+                                       LOAD_LIBRARY_SEARCH_USER_DIRS);
   if (!library) {
     fprintf(stderr, "LoadLibrary failed: %lu\n", GetLastError());
     return 1;
