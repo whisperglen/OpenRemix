@@ -92,6 +92,127 @@ jobs:
           path: _work/packages/windows
           if-no-files-found: error
 
+  linux:
+    name: Linux x64
+    runs-on: ubuntu-22.04
+    # The project documents Rocky Linux 8 as the glibc 2.28 portability baseline.
+    container:
+      image: rockylinux:8
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          dnf install -y dnf-plugins-core
+          dnf module enable -y python39
+          dnf install -y \
+            binutils \
+            clang \
+            cmake \
+            git \
+            make \
+            pkgconf-pkg-config \
+            python39 \
+            python39-pip \
+            tar \
+            gzip \
+            vulkan-loader \
+            alsa-lib-devel \
+            libX11-devel \
+            libXcursor-devel \
+            libXext-devel \
+            libXi-devel \
+            libXfixes-devel \
+            libXrandr-devel \
+            libXScrnSaver-devel \
+            libXtst-devel \
+            libxkbcommon-devel \
+            mesa-libEGL-devel \
+            mesa-libGL-devel \
+            systemd-devel \
+            wayland-devel
+          # Rocky/RHEL repositories use vulkan-devel, while some compatible
+          # images split the headers and loader development files.
+          dnf install -y vulkan-devel || dnf install -y vulkan-headers vulkan-loader-devel
+          ln -sf /usr/bin/python3.9 /usr/local/bin/python3
+
+      - name: Restore Git checkout and submodules
+        run: |
+          # Rocky Linux does not include Git in the base image. The checkout
+          # action therefore downloaded the source archive; recreate the Git
+          # checkout now that Git is installed so submodule pins are available.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global init.defaultBranch main
+          git init
+          git remote remove origin 2>/dev/null || true
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          if ! git fetch --depth=1 origin "$GITHUB_SHA"; then
+            git fetch --depth=1 origin "$GITHUB_REF"
+          fi
+          # The initial REST checkout is disposable and is untracked from
+          # Git's perspective; remove it before materializing the fetched tree.
+          git clean -fdx
+          git checkout --detach FETCH_HEAD
+          git submodule sync --recursive
+          git submodule update --init --recursive
+
+      - name: Install build tools
+        run: python3 -m pip install --disable-pip-version-check meson ninja numpy
+
+      - name: Verify Vulkan loader
+        run: |
+          test -f /usr/lib64/libvulkan.so.1
+          ldconfig -p | grep -F 'libvulkan.so.1'
+
+      - name: Cache OpenRemix dependencies and shader tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            _work/deps/linux
+            _work/tools
+          key: openremix-linux-${{ runner.arch }}-${{ hashFiles('scripts/common/dependencies.lock.json', 'scripts/shaders/toolchain.lock.json') }}
+
+      - name: Build dependencies
+        run: python3 scripts/common/build-dependencies.py --output _work/deps/linux
+
+      - name: Configure and build
+        env:
+          CC: clang
+          CXX: clang++
+          CXXFLAGS: -Wno-missing-designated-field-initializers
+        run: |
+          meson setup _work/build/linux . \
+            -Dbuildtype=release \
+            -Dwerror=true \
+            -Dgpu_tests=false \
+            -Ddeps_root="$PWD/_work/deps/linux/prefix"
+          meson compile -C _work/build/linux
+
+      - name: Run CPU tests
+        continue-on-error: true
+        run: |
+          export LD_LIBRARY_PATH="$PWD/_work/deps/linux/prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          meson test -C _work/build/linux --print-errorlogs
+
+      - name: Package
+        run: >-
+          python3 scripts/common/package-remix.py
+          --build _work/build/linux
+          --deps _work/deps/linux
+          --output _work/packages/linux
+          --target linux
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: openremix-linux-x64
+          path: _work/packages/linux
+          if-no-files-found: error
+
   release:
     name: Continuous prerelease
     if: >-
@@ -99,7 +220,7 @@ jobs:
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
         (github.event_name == 'workflow_dispatch' && inputs.publish_release)
       }}
-    needs: windows
+    needs: [windows, linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -108,13 +229,19 @@ jobs:
         uses: actions/download-artifact@v5
         with:
           name: openremix-windows-x64
-          path: package
+          path: package/windows
 
-      - name: Create release archive
+      - name: Download Linux package artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: openremix-linux-x64
+          path: package/linux
+
+      - name: Create release archives
         shell: bash
         run: |
-          cd package
-          zip -r ../OpenRemix-windows-x64.zip .
+          tar -czf OpenRemix-linux-x64.tar.gz -C package/linux .
+          (cd package/windows && zip -qr ../../OpenRemix-windows-x64.zip .)
 
       - name: Create or update continuous release
         env:
@@ -123,7 +250,11 @@ jobs:
           if ! gh release view continuous --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create continuous --repo "$GITHUB_REPOSITORY" \
               --title "OpenRemix continuous" \
-              --notes "Automated Windows x64 build from the main branch." \
+              --notes "Automated Windows x64 and Linux x64 builds from the main branch." \
               --prerelease
           fi
-          gh release upload continuous OpenRemix-windows-x64.zip --repo "$GITHUB_REPOSITORY" --clobber
+          gh release upload continuous \
+            OpenRemix-windows-x64.zip \
+            OpenRemix-linux-x64.tar.gz \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber

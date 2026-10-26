@@ -297,7 +297,7 @@ if get_option('gpu_tests')
   endif
 endif
 buffer_cache_test = executable('remix-buffer-cache-test', 'buffer_cache.cpp',
-  include_directories : test_includes, dependencies : vulkan_dep, cpp_args : ['-UNDEBUG'])
+  include_directories : test_includes, dependencies : [vulkan_dep, threads_dep], cpp_args : ['-UNDEBUG'])
 test('Upload buffer cache ownership and bounds', buffer_cache_test)
 eon_test = executable('remix-eon-test', 'eon.cpp', include_directories : native_include)
 test('EON furnace reciprocity and sampling PDFs', eon_test)
