@@ -3,8 +3,6 @@
 ﻿
 A performance-focused, multi-platform alternative to [dxvk-remix](https://github.com/NVIDIAGameWorks/dxvk-remix). 
 ﻿
-The entire codebase is different, the only Remix-part of OpenRemix is the compatibility with OpenUSD and the Remix API
-﻿
 ## Features
 - Raster rendering and path tracing, with raster or ray-traced primary visibility, this is used to pass through raster effects/overlays into the Path-traced view 
 - PBR materials, normal maps, decals, alpha cutouts, and translucent surfaces.
@@ -15,6 +13,7 @@ The entire codebase is different, the only Remix-part of OpenRemix is the compat
 - FSR FG and DLSS FG
 - Autoexposure, threshold-free bloom, and Prism tonemapping.
 - OpenUSD support for loading existing Remix replacement mods.
+- Remix compatible render API
 
 ## Projects Using OpenRemix
 - [BetaRT](https://github.com/sambow23/BetaRT/tree/openremix)
@@ -31,7 +30,7 @@ See [platforms.md](https://github.com/OpenRenderCollective/OpenRemix/blob/main/d
 - NVIDIA: NRD, SIGMA, SHARC and DLSS. AMD: FidelityFX FSR. Pixar and OpenUSD contributors.
 - SDL, Vulkan/MoltenVK, Dear ImGui, stb and bcdec contributors.
 - Jane, TheGreatHmmmmm, and surething on the `RTX Remix Showcase` server for guiding me in the right direction.
-- TheGreatHmmmmm for the Prism tonemapper and Bloom implementations.
+- TheGreatHmmmmm for the Prism tonemapper, Bloom, Gamma 2.2, and HDR implementations.
 - [sparkles✨](https://github.com/Kim2091) for their Numos implementation, please [donate to them when you get the chance](https://ko-fi.com/kim20913944)
 
 See [third-party notices](ThirdPartyLicenses.txt)

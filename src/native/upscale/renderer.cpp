@@ -98,10 +98,13 @@ struct Renderer::Gpu {
   uint32_t timestampBits{};
   float timestampPeriod{};
   Statistics stats;
+  VkPipeline tonemapCompositePipeline = VK_NULL_HANDLE;
   ~Gpu() {
     ngx.reset();
     if (created)
       ffxFsr3UpscalerContextDestroy(&context);
+    if (tonemapCompositePipeline)
+      pipeline::destroyPipeline(device, tonemapCompositePipeline, nullptr);
     if (compositePipeline)
       pipeline::destroyPipeline(device, compositePipeline, nullptr);
     if (compositeLayout)
@@ -546,7 +549,7 @@ void Renderer::record(VkCommandBuffer command, Input color, Input depth,
     ++g.stats.resets;
   g.initialized = true;
 }
-void Renderer::configureComposite(VkRenderPass pass, VkImageView stableDepth) {
+void Renderer::configureComposite(VkRenderPass pass, VkImageView stableDepth, VkRenderPass tonemapPass) {
   auto &g = *m_gpu;
   VkDescriptorSetLayoutBinding bindings[] = {
       {0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -662,6 +665,11 @@ void Renderer::configureComposite(VkRenderPass pass, VkImageView stableDepth) {
         .renderPass = pass};
     check(pipeline::createGraphicsPipelines(g.device, VK_NULL_HANDLE, 1, &ci,
                                             nullptr, &g.compositePipeline));
+    if (tonemapPass) {
+      ci.renderPass = tonemapPass;
+      check(pipeline::createGraphicsPipelines(g.device, VK_NULL_HANDLE, 1, &ci,
+                                              nullptr, &g.tonemapCompositePipeline));
+    }
   } catch (...) {
     for (auto module : modules)
       if (module)
@@ -671,21 +679,23 @@ void Renderer::configureComposite(VkRenderPass pass, VkImageView stableDepth) {
   for (auto module : modules)
     pipeline::destroyShaderModule(g.device, module, nullptr);
 }
-void Renderer::composite(VkCommandBuffer command, bool encodeOutput, bool prism, bool gamma22, bool hardwareSrgb, VkDescriptorSet post) {
+void Renderer::composite(VkCommandBuffer command, const scene::DisplayOutput &display, VkDescriptorSet post) {
   const auto &g = *m_gpu;
   VkViewport viewport{0, 0, float(g.display.width), float(g.display.height),
                       0, 1};
   VkRect2D scissor{{0, 0}, g.display};
   vkCmdSetViewport(command, 0, 1, &viewport);
   vkCmdSetScissor(command, 0, 1, &scissor);
-  vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    g.compositePipeline);
+  vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, g.compositePipeline);
   vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
                           g.compositeLayout, 0, 1, &g.compositeSet, 0, nullptr);
   vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, g.compositeLayout, 1, 1, &post, 0, nullptr);
-  const uint32_t settings[] = {uint32_t(encodeOutput), uint32_t(prism), uint32_t(gamma22), uint32_t(hardwareSrgb)};
+  struct {
+    uint32_t display;
+    float peakNits, paperWhiteNits;
+  } settings{uint32_t(display.hdr10), display.peakNits, display.paperWhiteNits};
   vkCmdPushConstants(command, g.compositeLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
-                     0, sizeof(settings), settings);
+                     0, sizeof(settings), &settings);
   vkCmdDraw(command, 3, 1, 0, 0);
 }
 
@@ -696,5 +706,11 @@ FrameGenerationInputs Renderer::frameGenerationInputs() const {
     return {};
   // record() writes the device depth for NGX and the reversed one for FSR.
   return {{g.depth->image, g.depth->view}, {g.motion->image, g.motion->view}, g.render, !g.ngx, true};
+}
+Input Renderer::preparedDepth() const {
+  return m_gpu->depth ? Input{m_gpu->depth->image, m_gpu->depth->view} : Input{};
+}
+Input Renderer::preparedMotion() const {
+  return m_gpu->motion ? Input{m_gpu->motion->image, m_gpu->motion->view} : Input{};
 }
 } // namespace remix::upscale

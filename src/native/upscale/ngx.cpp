@@ -89,7 +89,9 @@ struct Ngx::Impl {
   Impl() {
     caps.sdk = true;
     try {
-      libraries = moduleDirectory() / "dlss" / "310.9.1";
+      libraries = moduleDirectory() / "openremix" / "dlss";
+      if (!std::filesystem::is_directory(libraries))
+        libraries = moduleDirectory() / "dlss" / "310.9.1";
       // Meson's development artifacts also live in an isolated adjacent directory.
       if (!std::filesystem::is_directory(libraries))
         libraries = moduleDirectory() / "upscale";
@@ -793,7 +795,9 @@ void NgxFrameGeneration::record([[maybe_unused]] VkCommandBuffer command, [[mayb
   options.cameraFar = camera.farPlane;
   options.cameraFOV = camera.fieldOfView;
   options.cameraAspectRatio = camera.aspect;
-  options.colorBuffersHDR = false;
+  // The 10-bit swapchain formats hold HDR10 frames (runtime/hdr_output.h).
+  options.colorBuffersHDR =
+      m->format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 || m->format == VK_FORMAT_A2R10G10B10_UNORM_PACK32;
   options.depthInverted = camera.depthInverted;
   options.cameraMotionIncluded = true;
   options.reset = camera.reset;

@@ -4,6 +4,8 @@
 #endif
 #include "pathtrace/sharc_policy.h"
 #include "scene/emission.h"
+#include <algorithm>
+#include "upscale/ngx.h"
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -37,8 +39,8 @@ namespace remix {
     const bool faceCulling = opacityCache.oneSidedOpaqueEnabled();
     debugView = options.debugView;
     const bool falseColor = debugView != 0 && debugView != 6 && debugView != 7;
-    prism = options.prism && !falseColor;
-    gamma22 = options.gamma22 && !falseColor;
+    // The false colour debug views are shown without the tone curve.
+    falseColorView = falseColor;
     if (timestamps) {
       vkCmdResetQueryPool(command, timestamps, 0, 12);
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamps, 0);
@@ -71,6 +73,8 @@ namespace remix {
                               : options.stabilizeEmissiveLighting ? 1u
                                                                   : 0u;
     std::vector<VkDescriptorImageInfo> textures;
+    // The slots of textures holding sRGB-encoded texels (frame.srgbTextures).
+    std::vector<uint32_t> srgbSlots;
     // The scene signature: sky draws first, the tables' segments, then the
     // frame's lighting and settings (append writes to the current segment).
     trace::SceneSignature signature;
@@ -182,18 +186,33 @@ namespace remix {
           return resources.sampledEmission(request.material, command);
         }
       };
+      // After sampled(request) created its image.
+      auto srgb = [&](const trace::DescriptorRequest &request) {
+        const auto &material = *request.material;
+        return resources.textureSrgb(request.kind == trace::DescriptorRequest::Albedo ? material.texture.get()
+                                     : request.kind == trace::DescriptorRequest::Map  ? request.texture->get()
+                                                                                       : material.emissionTexture.get());
+      };
       textures.reserve(tables.requestCount() + 1);
       if (const auto *prefix = tables.prefix()) {
         if (prefixTexturesGeneration != prefix->generation) {
           prefixTextures.clear();
-          for (const auto &request : prefix->requests)
+          prefixSrgbSlots.clear();
+          for (const auto &request : prefix->requests) {
             prefixTextures.push_back(sampled(request));
+            if (srgb(request))
+              prefixSrgbSlots.push_back(uint32_t(prefixTextures.size() - 1));
+          }
           prefixTexturesGeneration = prefix->generation;
         }
         textures = prefixTextures;
+        srgbSlots = prefixSrgbSlots;
       }
-      for (const auto &request : tables.tail().requests)
+      for (const auto &request : tables.tail().requests) {
         textures.push_back(sampled(request));
+        if (srgb(request))
+          srgbSlots.push_back(uint32_t(textures.size() - 1));
+      }
     }
     uploadTime.close();
     breakdown.traceInstances += tables.instanceCount();
@@ -675,6 +694,8 @@ namespace remix {
         auto material = resources.domeMaterial();
         frame.skyRadiance[3] = float(textures.size() + 1);
         textures.push_back(resources.sampledTexture(material, dome.texture, command));
+        if (resources.textureSrgb(dome.texture.get()))
+          srgbSlots.push_back(uint32_t(textures.size() - 1));
         auto fingerprint = dome.texture->fingerprint();
         append(&fingerprint, sizeof(fingerprint));
       }
@@ -690,6 +711,8 @@ namespace remix {
           throw VK_ERROR_TOO_MANY_OBJECTS;
         table[i] = uint32_t(textures.size() + 1);
         textures.push_back(resources.sampledTexture(resources.cookieMaterial(), cookies[i], command));
+        if (resources.textureSrgb(cookies[i].get()))
+          srgbSlots.push_back(uint32_t(textures.size() - 1));
         auto fingerprint = cookies[i]->fingerprint();
         append(&fingerprint, sizeof(fingerprint));
       }
@@ -728,6 +751,9 @@ namespace remix {
     overlay.environment = frame.skyRadiance[3] > 0 && size_t(frame.skyRadiance[3]) <= textures.size()
                               ? textures[size_t(frame.skyRadiance[3]) - 1]
                               : VkDescriptorImageInfo{};
+    overlay.environmentSrgb = frame.skyRadiance[3] > 0 &&
+                              std::find(srgbSlots.begin(), srgbSlots.end(), uint32_t(frame.skyRadiance[3]) - 1) !=
+                                  srgbSlots.end();
     for (unsigned row = 0; row < 3; ++row)
       for (unsigned col = 0; col < 3; ++col)
         overlay.domeTransform[row][col] = frame.domeTransform[row][col];
@@ -749,6 +775,9 @@ namespace remix {
       textures.insert(textures.end(), cut.images, cut.images + cut.count);
       append(&cut.digest, sizeof(cut.digest));
     }
+    static_assert(PathTracer::textureLimit <= 32 * 128);
+    for (const uint32_t slot : srgbSlots)
+      frame.srgbTextures[slot >> 7][(slot >> 5) & 3] |= 1u << (slot & 31);
     // remixapi_InstanceInfoCameraCullingEXT: what the camera sees of the scene
     // is part of its signature (the flags applied, the visible set).
     configureCameraCulling(command, frame, options, resources);
@@ -814,6 +843,19 @@ namespace remix {
     append(&options.emissiveSolidAngleSampling, sizeof(options.emissiveSolidAngleSampling));
     append(&emissionMode, sizeof(emissionMode));
     append(&options.fsrSharpness, sizeof(options.fsrSharpness));
+    append(&options.neuralUplift, sizeof(options.neuralUplift));
+    append(&options.neuralUpliftPasses, sizeof(options.neuralUpliftPasses));
+    append(&options.neuralUpliftPreset, sizeof(options.neuralUpliftPreset));
+    append(&options.neuralUpliftStyle, sizeof(options.neuralUpliftStyle));
+    append(&options.neuralUpliftIntensity, sizeof(options.neuralUpliftIntensity));
+    append(&options.neuralUpliftStyleStrength, sizeof(options.neuralUpliftStyleStrength));
+    append(&options.neuralUpliftLocalStructureStrength, sizeof(options.neuralUpliftLocalStructureStrength));
+    append(&options.neuralUpliftSkinStructureStrength, sizeof(options.neuralUpliftSkinStructureStrength));
+    append(&options.neuralUpliftAutoMask, sizeof(options.neuralUpliftAutoMask));
+    append(&options.neuralUpliftDepthInverted, sizeof(options.neuralUpliftDepthInverted));
+    append(&options.neuralUpliftMotionVectorScale, sizeof(options.neuralUpliftMotionVectorScale));
+    append(&options.neuralUpliftFeatureId, sizeof(options.neuralUpliftFeatureId));
+    currentTraceOptions = options;
     const uint64_t cacheSettings[] = {
         options.sharcReset,     options.sharcCapacityLog2,       options.sharcSceneScale,
         options.sharcDownscale, options.sharcAccumulationFrames, options.sharcStaleFrames,
@@ -836,7 +878,7 @@ namespace remix {
     // An unchanged world can reuse its cached output once both histories are warm.
     if (!sceneChanged && !profileEveryFrame && !std::getenv("REMIX_PATH_LINEAR_CAPTURE") &&
         !options.accumulate && !debugView && !postProcessing->needsGuide() && denoiser && !denoiser->statistics().redrawRequested &&
-        !history.reset() && !(upscaler && reconstructionWarmFrames < 128) &&
+        !history.reset() && !((upscaler || options.neuralUplift) && reconstructionWarmFrames < 128) &&
         !(sharc.stats.active && sharc.hasReceivers && sharc.warmFrames < 2 * options.sharcAccumulationFrames))
       return;
     if (sceneChanged) {
@@ -1876,12 +1918,124 @@ namespace remix {
     const auto hdr = g.upscaler && !g.debugView ? g.upscaler->output() : upscale::Input{g.world->handle, g.world->view};
     g.postProcessing->record(command, hdr, options, resources.temporalEpoch(), g.rendered,
       (g.postProcessing == g.postFallback.get() && !g.retainPostExposure) || options.debugView || options.shadowDebug || options.sharcDebug || options.validation, -1, g.stats.sceneGeneration);
+
+    const bool neuralUpliftActive = options.neuralUplift && g.tonemapPass && g.tonemapTarget;
+    if (neuralUpliftActive) {
+      if (g.rendered || !g.neuralUpliftValid) {
+        VkClearValue clear[2] = {};
+        clear[1].depthStencil.depth = 1.0f;
+        VkRenderPassBeginInfo rpInfo{
+            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+            .renderPass = g.tonemapPass,
+            .framebuffer = g.tonemapFramebuffer,
+            .renderArea = {{0, 0}, g.displayExtent},
+            .clearValueCount = 2,
+            .pClearValues = clear};
+        vkCmdBeginRenderPass(command, &rpInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+        if (g.upscaler && !g.debugView) {
+          g.upscaler->composite(command, g.display, g.postProcessing->bindings());
+        } else {
+          VkViewport viewport = {0, 0, float(g.displayExtent.width), float(g.displayExtent.height), 0, 1};
+          VkRect2D scissor = {{0, 0}, g.displayExtent};
+          vkCmdSetViewport(command, 0, 1, &viewport);
+          vkCmdSetScissor(command, 0, 1, &scissor);
+          vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, g.layout, 0, 1, &g.set, 0, nullptr);
+          const auto postSet = g.postProcessing->bindings();
+          vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, g.layout, 1, 1, &postSet, 0, nullptr);
+          for (uint32_t i = 0; i < 2; ++i) {
+            struct {
+              uint32_t additive, falseColor, width, height, display;
+              float peakNits, paperWhiteNits;
+            } push{i,
+                   uint32_t(g.falseColorView),
+                   g.displayExtent.width,
+                   g.displayExtent.height,
+                   uint32_t(g.display.hdr10),
+                   g.display.peakNits,
+                   g.display.paperWhiteNits};
+            static_assert(sizeof(push) <= featuresOffset);
+            vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, g.tonemapComposite[i]);
+            vkCmdPushConstants(command, g.layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
+            vkCmdDraw(command, 3, 1, 0, 0);
+          }
+        }
+        vkCmdEndRenderPass(command);
+
+        VkImageMemoryBarrier barrier{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = g.tonemapTarget->handle,
+            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+        if (!g.neuralUplift) {
+          g.neuralUplift = std::make_unique<upscale::NeuralUplift>();
+        }
+        upscale::NeuralUpliftSettings nuSettings;
+        nuSettings.enable = options.neuralUplift;
+        nuSettings.passes = options.neuralUpliftPasses;
+        nuSettings.preset = options.neuralUpliftPreset;
+        nuSettings.style = options.neuralUpliftStyle;
+        nuSettings.intensity = options.neuralUpliftIntensity;
+        nuSettings.styleStrength = options.neuralUpliftStyleStrength;
+        nuSettings.localStructureStrength = options.neuralUpliftLocalStructureStrength;
+        nuSettings.skinStructureStrength = options.neuralUpliftSkinStructureStrength;
+        nuSettings.autoMask = options.neuralUpliftAutoMask;
+        nuSettings.depthInverted = options.neuralUpliftDepthInverted;
+        nuSettings.motionVectorScale = options.neuralUpliftMotionVectorScale;
+        nuSettings.featureId = options.neuralUpliftFeatureId;
+        nuSettings.bypassCallerCheck = options.neuralUpliftBypassCallerCheck;
+
+        auto d = g.denoiser ? g.denoiser->image(denoise::Depth) : upscale::Input{};
+        auto m = g.denoiser ? g.denoiser->image(denoise::Motion) : upscale::Input{};
+
+        if (g.ngx)
+          g.ngx->initializeDevice();
+        g.neuralUplift->initialize(g.ngx ? g.ngx->instanceHandle() : VK_NULL_HANDLE,
+                                   g.physical, g.device, g.queueFamily, g.displayExtent, nuSettings);
+
+        const bool resetHistory = !g.neuralUpliftValid || g.temporalFrame.flags[0] != 0;
+        g.neuralUplift->record(command, g.tonemapTarget->handle, g.tonemapTarget->view,
+                               d.image, d.view, m.image, m.view, g.extent, g.pendingProjection.data(),
+                               nuSettings, resetHistory);
+
+        barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+        g.neuralUpliftValid = true;
+      }
+      g.neuralUpliftRan = true;
+    } else {
+      g.neuralUpliftRan = false;
+      g.neuralUpliftValid = false;
+    }
   }
 
   void PathTracer::record(VkCommandBuffer command) {
     auto &g = *m_gpu;
+    if (g.neuralUpliftRan && g.blitPipeline) {
+      VkViewport viewport = {0, 0, float(g.displayExtent.width), float(g.displayExtent.height), 0, 1};
+      VkRect2D scissor = {{0, 0}, g.displayExtent};
+      vkCmdSetViewport(command, 0, 1, &viewport);
+      vkCmdSetScissor(command, 0, 1, &scissor);
+      vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, g.blitPipeline);
+      vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, g.blitLayout, 0, 1, &g.blitSet, 0, nullptr);
+      const uint32_t push[] = {0u, uint32_t(!g.upscaler || g.debugView)};
+      vkCmdPushConstants(command, g.blitLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), push);
+      vkCmdDraw(command, 3, 1, 0, 0);
+      g.neuralUpliftRan = false;
+      return;
+    }
     if (g.upscaler && !g.debugView) {
-      g.upscaler->composite(command, g.encodeOutput, g.prism, g.gamma22, g.hardwareSrgb, g.postProcessing->bindings());
+      g.upscaler->composite(command, g.display, g.postProcessing->bindings());
       return;
     }
     VkViewport viewport = {0, 0, float(g.displayExtent.width), float(g.displayExtent.height), 0, 1};
@@ -1892,15 +2046,19 @@ namespace remix {
     const auto postSet = g.postProcessing->bindings();
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, g.layout, 1, 1, &postSet, 0, nullptr);
     for (uint32_t i = 0; i < 2; ++i) {
-      const uint32_t push[] = {i,
-                               uint32_t(g.encodeOutput),
-                               uint32_t(g.prism),
-                               uint32_t(g.gamma22),
-                               uint32_t(g.hardwareSrgb),
-                               g.displayExtent.width,
-                               g.displayExtent.height};
+      struct {
+        uint32_t additive, falseColor, width, height, display;
+        float peakNits, paperWhiteNits;
+      } push{i,
+             uint32_t(g.falseColorView),
+             g.displayExtent.width,
+             g.displayExtent.height,
+             uint32_t(g.display.hdr10),
+             g.display.peakNits,
+             g.display.paperWhiteNits};
+      static_assert(sizeof(push) <= featuresOffset);
       vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, g.composite[i]);
-      vkCmdPushConstants(command, g.layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), push);
+      vkCmdPushConstants(command, g.layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
       vkCmdDraw(command, 3, 1, 0, 0);
     }
   }

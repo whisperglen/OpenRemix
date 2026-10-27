@@ -187,8 +187,6 @@ namespace remix::config {
         TRACE(bloomRadius, 0, 1);
         TRACE(contrast, 0, 1);
         TRACE(contrastAmount, .5, 2);
-        TRACE(prism, 0, 1);
-        TRACE(gamma22, 0, 1);
         TRACE(localLights, 0, 1);
         TRACE(torchLights, 0, 1);
         TRACE(emissiveLights, 0, 1);
@@ -316,6 +314,34 @@ namespace remix::config {
         TRACE(hardwareFaceCulling, 0, 1);
         TRACE(combinedTlas, 0, 1);
         TRACE(shadowEarlyOut, 0, 1);
+        TRACE(neuralUplift, 0, 1);
+        TRACE(neuralUpliftPasses, 1, 7);
+        TRACE(neuralUpliftPreset, 0, 7);
+        TRACE(neuralUpliftStyle, 0, 2);
+        TRACE(neuralUpliftIntensity, 0, 1);
+        TRACE(neuralUpliftStyleStrength, 0, 1);
+        TRACE(neuralUpliftLocalStructureStrength, 0, 2);
+        result.push_back(scalar("rtx.native.pathtrace.neuralUpliftSkinStructureStrength",
+                                FIELD(trace.neuralUpliftSkinStructureStrength), 0, 2, 0, true));
+        TRACE(neuralUpliftAutoMask, 0, 1);
+        TRACE(neuralUpliftDepthInverted, 0, 1);
+        TRACE(neuralUpliftMotionVectorScale, 0.01, 10);
+        TRACE(neuralUpliftFeatureId, 0, 63);
+        TRACE(neuralUpliftBypassCallerCheck, 0, 1);
+        // Compatibility aliases for rtx.neuralUplift.*
+        result.push_back(scalar("rtx.neuralUplift.enable", FIELD(trace.neuralUplift), 0, 1));
+        result.push_back(scalar("rtx.neuralUplift.passes", FIELD(trace.neuralUpliftPasses), 1, 7));
+        result.push_back(scalar("rtx.neuralUplift.preset", FIELD(trace.neuralUpliftPreset), 0, 7));
+        result.push_back(scalar("rtx.neuralUplift.style", FIELD(trace.neuralUpliftStyle), 0, 2));
+        result.push_back(scalar("rtx.neuralUplift.intensity", FIELD(trace.neuralUpliftIntensity), 0, 1));
+        result.push_back(scalar("rtx.neuralUplift.styleStrength", FIELD(trace.neuralUpliftStyleStrength), 0, 1));
+        result.push_back(scalar("rtx.neuralUplift.localStructureStrength", FIELD(trace.neuralUpliftLocalStructureStrength), 0, 2));
+        result.push_back(scalar("rtx.neuralUplift.skinStructureStrength", FIELD(trace.neuralUpliftSkinStructureStrength), 0, 2, 0, true));
+        result.push_back(scalar("rtx.neuralUplift.autoMask", FIELD(trace.neuralUpliftAutoMask), 0, 1));
+        result.push_back(scalar("rtx.neuralUplift.depthInverted", FIELD(trace.neuralUpliftDepthInverted), 0, 1));
+        result.push_back(scalar("rtx.neuralUplift.motionVectorScale", FIELD(trace.neuralUpliftMotionVectorScale), 0.01, 10));
+        result.push_back(scalar("rtx.neuralUplift.featureId", FIELD(trace.neuralUpliftFeatureId), 0, 63));
+        result.push_back(scalar("rtx.neuralUplift.bypassCallerCheck", FIELD(trace.neuralUpliftBypassCallerCheck), 0, 1));
         for (size_t i = 0; i < 3; ++i) {
           result.push_back(scalar(
               "rtx.native.pathtrace.lightDirection." + std::string(1, "xyz"[i]),
@@ -332,6 +358,8 @@ namespace remix::config {
               "rtx.native.clearColor." + std::string(1, "rgba"[i]),
               [i](auto &s) -> auto & { return s.clearColor[i]; }, 0, 1));
         result.push_back(scalar("rtx.native.textures.keepCompressed", FIELD(compressedTextures), 0, 1));
+        result.push_back(
+            scalar("rtx.native.capture.retainTextureData", FIELD(captureRetainTextureData), 0, 1));
         result.push_back(scalar("rtx.native.vramStatistics", FIELD(vramStatistics), 0, 1));
         result.push_back(scalar("rtx.native.meshes.refreshInPlace", FIELD(refreshGeometry), 0, 1));
         result.push_back(scalar("rtx.native.hostPasses", FIELD(hostPasses), 0, 1));
@@ -339,6 +367,10 @@ namespace remix::config {
         result.push_back(
             scalar("rtx.native.scene.persistentStaticValidation", FIELD(persistentStaticValidation), 0, 1));
         result.push_back(scalar("rtx.native.asyncPresent", FIELD(asyncPresent), 0, 1));
+        result.push_back(scalar("rtx.native.hdr", FIELD(hdr), 0, 1));
+        result.push_back(scalar("rtx.native.hdrPeakNits", FIELD(hdrPeakNits), 80, 10000));
+        result.push_back(scalar("rtx.native.hdrPaperWhiteNits", FIELD(hdrPaperWhiteNits), 80, 1000));
+        result.push_back(scalar("rtx.native.hdrUiNits", FIELD(hdrUiNits), 80, 1000));
         result.push_back(scalar("rtx.native.frameGeneration", FIELD(frameGeneration), 0, 1));
         result.push_back(choices("rtx.native.frameGenerationBackend", FIELD(frameGenerationBackend),
                                  {"auto", "dlss", "fsr31"}));

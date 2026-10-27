@@ -5,7 +5,9 @@
 #include "runtime/sky_control.h"
 #include "postfx/renderer.h"
 #include "raster/renderer.h"
+#include "scene/display.h"
 #include "scene/trace_frame.h"
+#include "upscale/neural_uplift.h"
 #include <remix/remix_native_ext.h>
 #include "pathtrace/block_costs.h"
 #include <vulkan/vulkan.h>
@@ -84,8 +86,12 @@ namespace remix {
     std::shared_ptr<postfx::State> exposureState() const;
     VkExtent2D renderExtent() const;
     void setPostProcessing(postfx::Renderer *renderer, bool retainExposure = false);
-    void configureTarget(VkRenderPass pass, VkExtent2D extent, bool encodeOutput, VkFormat depthFormat,
-                         VkImageView depthView, bool hardwareSrgb = false);
+    // The display target is UNORM (SDR) or float (HDR10): the composite writes
+    // gamma 2.2 values.
+    void configureTarget(VkRenderPass pass, VkExtent2D extent, VkFormat depthFormat, VkImageView depthView);
+    // What the display is sent (scene/display.h). Applies from the next record().
+    using DisplayOutput = scene::DisplayOutput;
+    void setDisplayOutput(const DisplayOutput &output);
     VkRenderPass skyPass() const;
     // The view depth of the frame being traced (the denoiser's guide, R32
     // float, GENERAL layout, render resolution): what host passes sample as
@@ -102,6 +108,7 @@ namespace remix {
       float sunRadiance[3] = {};
       float skyRadiance[4] = {};
       VkDescriptorImageInfo environment{};
+      bool environmentSrgb = false; // its texels are sRGB-encoded: decoded with pow 2.2
       float domeTransform[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
       VkDescriptorImageInfo cloudShadow{};
       float cloudShadowTransform[3][4] = {};
@@ -111,6 +118,7 @@ namespace remix {
     };
     OverlayLighting overlayLighting() const;
     upscale::Statistics upscalingStatistics() const;
+    upscale::NeuralUpliftStatistics neuralUpliftStatistics() const;
     // What frame generation needs of the frame just prepared: the upscaler's
     // depth and motion and the cameras of this and the previous frame
     // (unjittered). Not valid without an upscaler.

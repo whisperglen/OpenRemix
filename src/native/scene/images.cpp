@@ -779,7 +779,7 @@ namespace remix::scene {
       std::array<float, 256> table{};
       for (int i = 0; i < 256; ++i) {
         const float c = i / 255.f;
-        table[i] = c <= .04045f ? c / 12.92f : std::pow((c + .055f) / 1.055f, 2.4f);
+        table[i] = std::pow(c, 2.2f); // sRGB-encoded: gamma 2.2
       }
       return table;
     }();
@@ -787,7 +787,7 @@ namespace remix::scene {
       std::array<uint8_t, 4097> table{};
       for (int i = 0; i <= 4096; ++i) {
         const float c = i / 4096.f;
-        table[i] = uint8_t(std::lround((c <= .0031308f ? c * 12.92f : 1.055f * std::pow(c, 1 / 2.4f) - .055f) * 255));
+        table[i] = uint8_t(std::lround(std::pow(c, 1 / 2.2f) * 255));
       }
       return table;
     }();
@@ -824,5 +824,83 @@ namespace remix::scene {
       width = w;
       height = h;
     }
+  }
+
+  std::vector<uint8_t> encodeDds(const Pixels &pixels) {
+    // DXGI formats loadTexture reads back (its DX10 table): BC blocks as
+    // uploaded, else RGBA8 or linear RGBA32F texels.
+    uint32_t dxgi = 0, levels = 0;
+    std::vector<const std::vector<uint8_t> *> bytes;
+    std::vector<uint8_t> hdr;
+    uint32_t width = pixels.width, height = pixels.height;
+    if (const auto &c = pixels.compressed; c && !c->upload.empty()) {
+      switch (c->block) {
+      case 1: dxgi = pixels.srgb ? 72 : 71; break;
+      case 3: dxgi = pixels.srgb ? 78 : 77; break;
+      case 4: dxgi = 80; break;
+      case 5: dxgi = 83; break;
+      case 6: dxgi = 95; break;
+      case 16: dxgi = 96; break;
+      case 7: dxgi = pixels.srgb ? 99 : 98; break;
+      default: return {};
+      }
+      levels = c->levels;
+      bytes.push_back(&c->upload);
+    } else if (pixels.compressed) {
+      // The blocks were released after upload: the small preview stands in.
+      const auto &c = *pixels.compressed;
+      if (!c.previewWidth || !c.previewHeight)
+        return {};
+      width = c.previewWidth;
+      height = c.previewHeight;
+      levels = 1;
+      if (!c.hdrPreview.empty()) {
+        dxgi = 2;
+        hdr.resize(c.hdrPreview.size() * sizeof(float));
+        std::memcpy(hdr.data(), c.hdrPreview.data(), hdr.size());
+        bytes.push_back(&hdr);
+      } else {
+        dxgi = pixels.srgb ? 29 : 28;
+        bytes.push_back(&c.preview);
+      }
+    } else if (!pixels.hdrMips.empty()) {
+      dxgi = 2;
+      levels = uint32_t(pixels.hdrMips.size());
+      for (const auto &mip : pixels.hdrMips) {
+        const auto offset = hdr.size();
+        hdr.resize(offset + mip.size() * sizeof(float));
+        std::memcpy(hdr.data() + offset, mip.data(), mip.size() * sizeof(float));
+      }
+      bytes.push_back(&hdr);
+    } else if (!pixels.mips.empty()) {
+      dxgi = pixels.srgb ? 29 : 28;
+      levels = uint32_t(pixels.mips.size());
+      for (const auto &mip : pixels.mips)
+        bytes.push_back(&mip);
+    }
+    if (!dxgi || !width || !height || !levels)
+      return {};
+    std::vector<uint8_t> out(148);
+    auto put = [&](size_t offset, uint32_t value) {
+      for (int i = 0; i < 4; ++i)
+        out[offset + i] = uint8_t(value >> (8 * i));
+    };
+    put(0, 0x20534444); // "DDS "
+    put(4, 124);
+    // CAPS | HEIGHT | WIDTH | PIXELFORMAT | MIPMAPCOUNT
+    put(8, 0x1 | 0x2 | 0x4 | 0x1000 | 0x20000);
+    put(12, height);
+    put(16, width);
+    put(28, levels);
+    put(76, 32);
+    put(80, 4);          // DDPF_FOURCC
+    put(84, 0x30315844); // "DX10"
+    put(108, 0x1000 | (levels > 1 ? 0x400008 : 0));
+    put(128, dxgi);
+    put(132, 3); // DDS_DIMENSION_TEXTURE2D
+    put(140, 1); // array size
+    for (const auto *level : bytes)
+      out.insert(out.end(), level->begin(), level->end());
+    return out;
   }
 } // namespace remix::scene

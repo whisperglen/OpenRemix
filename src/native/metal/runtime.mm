@@ -11,6 +11,12 @@
 #include <thread>
 
 namespace remix {
+#if REMIX_HAS_USD
+  // Retained BC blocks are read only by USD captures.
+  constexpr bool kCaptures = true;
+#else
+  constexpr bool kCaptures = false;
+#endif
   RemixNativeRuntime::RemixNativeRuntime() = default;
 
   namespace metal {
@@ -66,7 +72,8 @@ namespace remix {
     m_lastPresentation = {};
     m_longestPresentationGap = 0;
     m_framePerformance = {.structSize = sizeof(remixapi_FramePerformanceEXT)};
-    m_srgb = !info.disableSrgbConversionForOutput;
+    // info.disableSrgbConversionForOutput is accepted but ignored: the output
+    // is always gamma 2.2 encoded (UNORM drawable).
     @autoreleasepool {
       try {
         if (!m_disableProfiles)
@@ -100,8 +107,8 @@ namespace remix {
         g.frameCount = frames && std::strcmp(frames, "1") == 0 ? 1u : gpuFrameCount;
         g.frames = dispatch_semaphore_create(g.frameCount);
         g.layer.device = g.device;
-        // sRGB output like the Vulkan swapchain; UNORM encodes in the shaders.
-        g.format = m_srgb ? MTLPixelFormatBGRA8Unorm_sRGB : MTLPixelFormatBGRA8Unorm;
+        // UNORM output like the Vulkan swapchain: the shaders encode gamma 2.2.
+        g.format = MTLPixelFormatBGRA8Unorm;
         g.layer.pixelFormat = g.format;
         // Screenshots copy the drawable.
         g.layer.framebufferOnly = NO;
@@ -239,6 +246,7 @@ namespace remix {
     if (config::set(next, key, value) != config::SetResult::Success || !m_profiles.edit(next))
       return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
     m_raster.setKeepCompressedTextures(m_profiles.current().compressedTextures);
+    scene::retainCompressedUploads = kCaptures && m_profiles.current().captureRetainTextureData;
     m_raster.setRefreshGeometry(m_profiles.current().refreshGeometry);
     return REMIXAPI_ERROR_CODE_SUCCESS;
   }
@@ -255,6 +263,7 @@ namespace remix {
       m_profiles.edit(next);
     }
     m_raster.setKeepCompressedTextures(m_profiles.current().compressedTextures);
+    scene::retainCompressedUploads = kCaptures && m_profiles.current().captureRetainTextureData;
     m_raster.setRefreshGeometry(m_profiles.current().refreshGeometry);
     m_hostPasses.setEnabled(m_profiles.current().hostPasses);
     return REMIXAPI_ERROR_CODE_SUCCESS;
@@ -278,6 +287,7 @@ namespace remix {
   void RemixNativeRuntime::applySettings() {
     const auto &settings = m_profiles.current();
     m_raster.setKeepCompressedTextures(settings.compressedTextures);
+    scene::retainCompressedUploads = kCaptures && settings.captureRetainTextureData;
     m_raster.setRefreshGeometry(settings.refreshGeometry);
     m_vsync = settings.vsync;
   }
@@ -322,8 +332,7 @@ namespace remix {
       const bool perspective = m_raster.cameraValid() && metal::reconstruction::supportsCamera(m_raster.projection());
       const auto desired = metal::PathTracer::Configuration::of(
           (__bridge void *)g.device, settings.trace, settings.frameGeneration, local, perspective, width, height,
-          uint32_t(g.format), !m_srgb ? false : g.format != MTLPixelFormatBGRA8Unorm_sRGB,
-          g.format == MTLPixelFormatBGRA8Unorm_sRGB);
+          uint32_t(g.format));
       if (m_pathTracer && m_pathTracer->configuration() == desired)
         retire();
       else {

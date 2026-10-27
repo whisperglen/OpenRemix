@@ -34,6 +34,12 @@
 #include <cmath>
 
 namespace remix {
+#if REMIX_HAS_USD
+  // Retained BC blocks are read only by USD captures.
+  constexpr bool kCaptures = true;
+#else
+  constexpr bool kCaptures = false;
+#endif
   remixapi_ErrorCode RemixNativeRuntime::selectBackend(const char *value) {
     auto next = m_profiles.current();
     if (config::set(next, "rtx.native.backend", value) != config::SetResult::Success)
@@ -53,6 +59,7 @@ namespace remix {
       return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
     // Texture creation needs no frame boundary: later CreateTexture calls see it.
     m_raster.setKeepCompressedTextures(m_profiles.current().compressedTextures);
+    scene::retainCompressedUploads = kCaptures && m_profiles.current().captureRetainTextureData;
     m_raster.setRefreshGeometry(m_profiles.current().refreshGeometry);
     // The host's next submission already sees it (else from the next frame).
     m_hostPasses.setEnabled(m_profiles.current().hostPasses);
@@ -83,6 +90,7 @@ namespace remix {
       m_profiles.edit(next);
     }
     m_raster.setKeepCompressedTextures(m_profiles.current().compressedTextures);
+    scene::retainCompressedUploads = kCaptures && m_profiles.current().captureRetainTextureData;
     m_raster.setRefreshGeometry(m_profiles.current().refreshGeometry);
     m_hostPasses.setEnabled(m_profiles.current().hostPasses);
     return REMIXAPI_ERROR_CODE_SUCCESS;
@@ -152,6 +160,7 @@ namespace remix {
     const auto &settings = m_profiles.current();
     m_requestedBackend = settings.backend;
     m_raster.setKeepCompressedTextures(settings.compressedTextures);
+    scene::retainCompressedUploads = kCaptures && settings.captureRetainTextureData;
     m_raster.setRefreshGeometry(settings.refreshGeometry);
     m_raster.syncHiddenTextures(settings.hideTextures);
     // Read by the frame's recording (the render thread with asynchronous presentation).
@@ -293,9 +302,6 @@ namespace remix {
         const auto extent = m_swapchainExtent;
         const auto depthFormat = renderer().depthFormat();
         const auto depth = renderer().depthView();
-        const bool srgb = m_swapchainFormat == VK_FORMAT_R8G8B8A8_SRGB ||
-                          m_swapchainFormat == VK_FORMAT_B8G8R8A8_SRGB;
-        const bool encode = m_srgb && !srgb;
         const auto options = normalized(settings.trace);
         const auto ngx = m_ngx;
         const auto exposureState = m_exposureState;
@@ -317,8 +323,7 @@ namespace remix {
           tracer->initialize(physical, device, family, true,
                              options.rasterPrimary, exposureState);
           tracer->setNgx(ngx);
-          tracer->configureTarget(pass, extent, encode, depthFormat, depth,
-                                  srgb);
+          tracer->configureTarget(pass, extent, depthFormat, depth);
           tracer->prepareConfiguration(options, perspective, local,
                                        failedBackends, reconstructionFailure);
           next->tracer = std::move(tracer);
