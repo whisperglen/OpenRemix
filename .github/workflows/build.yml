@@ -94,6 +94,8 @@ jobs:
 
   linux:
     name: Linux x64
+    # Temporarily disabled while the Linux toolchain is being revised.
+    if: ${{ false }}
     runs-on: ubuntu-22.04
     # The project documents Rocky Linux 8 as the glibc 2.28 portability baseline.
     container:
